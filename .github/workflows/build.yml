@@ -1,1 +1,115 @@
-.github/workflows/build.yml
+# 文件位置：.github/workflows/build.yml
+name: 全自动打包 MFSPlayer SDK
+
+# 触发条件：只要你往 main 分支推送代码，机器人就自动开工
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  # ========== 任务1：编译 C++ 内核为 Wasm ==========
+  build-wasm:
+    runs-on: ubuntu-latest
+    container: emscripten/emsdk:latest   # 调用官方编译环境
+    steps:
+      - name: 1. 下载你的代码
+        uses: actions/checkout@v4
+
+      - name: 2. 编译 C++ 内核
+        run: |
+          emcc core/mfs_core.cpp \
+          -O3 -std=c++17 -s WASM=1 \
+          -s EXPORTED_FUNCTIONS='["mfs_set_callback","mfs_load_script","mfs_tick","mfs_reset"]' \
+          -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap"]' \
+          -s ALLOW_TABLE_GROWTH=1 -s NO_FILESYSTEM=1 \
+          -o output/mfs.js
+
+      - name: 3. 上传编译产物（供后续任务使用）
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-core
+          path: output/
+
+  # ========== 任务2：打包 Android SDK ==========
+  build-android:
+    needs: build-wasm   # 等上面的 Wasm 编译完了再执行
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. 下载你的代码
+        uses: actions/checkout@v4
+
+      - name: 2. 下载刚才编译好的 Wasm 内核
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-core
+          path: android/src/main/assets/   # 把 wasm 放到安卓的资产目录
+
+      - name: 3. 设置 Java 环境
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: 4. 执行安卓打包（生成 .aar）
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleRelease
+
+      - name: 5. 上传安卓 SDK 包
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-sdk
+          path: android/app/build/outputs/aar/*.aar
+
+  # ========== 任务3：打包 iOS SDK（需要在 Mac 环境） ==========
+  build-ios:
+    needs: build-wasm
+    runs-on: macos-latest   # iOS 必须在 Mac 上编译
+    steps:
+      - name: 1. 下载你的代码
+        uses: actions/checkout@v4
+
+      - name: 2. 下载 Wasm 内核
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-core
+          path: ios/SDK/Resources/   # 放到 iOS 资源目录
+
+      - name: 3. 打包 iOS（生成 .xcframework 或 .podspec）
+        run: |
+          cd ios
+          # 这里用 xcodebuild 或者 pod 命令打包
+          # 如果你用 CocoaPods，可以执行：pod package MFSPlayer.podspec
+          echo "iOS 打包完成（具体命令根据你的项目结构补充）"
+
+      - name: 4. 上传 iOS SDK 包
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-sdk
+          path: ios/*.xcframework.zip
+
+  # ========== 任务4：打包 H5 SDK（给 NPM 用） ==========
+  build-h5:
+    needs: build-wasm
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. 下载你的代码
+        uses: actions/checkout@v4
+
+      - name: 2. 下载 Wasm 内核
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-core
+          path: h5/dist/
+
+      - name: 3. 打包 H5 压缩包
+        run: |
+          cd h5
+          npm pack   # 生成 .tgz 文件
+
+      - name: 4. 上传 H5 包
+        uses: actions/upload-artifact@v4
+        with:
+          name: h5-sdk
+          path: h5/*.tgz
